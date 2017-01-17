@@ -50,6 +50,9 @@ if ENABLE_WALLET
 BITCOIN_INCLUDES += $(BDB_CPPFLAGS)
 EXTRA_LIBRARIES += libbitcoin_wallet.a
 endif
+if ENABLE_ZMQ
+EXTRA_LIBRARIES += libbitcoin_zmq.a
+endif
 
 if BUILD_BITCOIN_LIBS
 lib_LTLIBRARIES = libzcashconsensus.la
@@ -68,6 +71,9 @@ endif
 
 if BUILD_BITCOIN_UTILS
   bin_PROGRAMS += komodo-cli komodo-tx
+if ENABLE_WALLET
+  bin_PROGRAMS += wallet-utility
+endif
 endif
 
 LIBZCASH_H = \
@@ -84,6 +90,8 @@ LIBZCASH_H = \
 .PHONY: FORCE check-symbols check-security
 # bitcoin core #
 BITCOIN_CORE_H = \
+  addressindex.h \
+  spentindex.h \
   addrman.h \
   alert.h \
   amount.h \
@@ -172,7 +180,12 @@ BITCOIN_CORE_H = \
   wallet/db.h \
   wallet/wallet.h \
   wallet/wallet_ismine.h \
-  wallet/walletdb.h
+  wallet/walletdb.h \
+  zmq/zmqabstractnotifier.h \
+  zmq/zmqconfig.h\
+  zmq/zmqnotificationinterface.h \
+  zmq/zmqpublishnotifier.h
+
 
 JSON_H = \
   json/json_spirit.h \
@@ -228,6 +241,17 @@ libbitcoin_server_a_SOURCES = \
   $(JSON_H) \
   $(BITCOIN_CORE_H) \
   $(LIBZCASH_H)
+
+if ENABLE_ZMQ
+LIBBITCOIN_ZMQ=libbitcoin_zmq.a
+
+libbitcoin_zmq_a_CPPFLAGS = $(BITCOIN_INCLUDES)
+libbitcoin_zmq_a_SOURCES = \
+  zmq/zmqabstractnotifier.cpp \
+  zmq/zmqnotificationinterface.cpp \
+  zmq/zmqpublishnotifier.cpp
+endif
+
 
 # wallet: shared between bitcoind and bitcoin-qt, but only linked
 # when wallet enabled
@@ -369,6 +393,10 @@ komodod_LDADD = \
   $(LIBMEMENV) \
   $(LIBSECP256K1)
 
+if ENABLE_ZMQ
+komodod_LDADD += $(LIBBITCOIN_ZMQ) $(ZMQ_LIBS)
+endif
+
 if ENABLE_WALLET
 komodod_LDADD += libbitcoin_wallet.a
 endif
@@ -389,6 +417,14 @@ komodo_cli_SOURCES = bitcoin-cli.cpp
 komodo_cli_CPPFLAGS = $(BITCOIN_INCLUDES)
 komodo_cli_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
 
+# wallet-utility binary #
+if ENABLE_WALLET
+wallet_utility_SOURCES = wallet-utility.cpp
+wallet_utility_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(EVENT_CFLAG)
+wallet_utility_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+wallet_utility_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
+endif
+
 if TARGET_WINDOWS
 komodo_cli_SOURCES += bitcoin-cli-res.rc
 endif
@@ -402,6 +438,20 @@ komodo_cli_LDADD = \
   $(LIBZCASH) \
   $(LIBBITCOIN_CRYPTO) \
   $(LIBZCASH_LIBS)
+if ENABLE_WALLET
+wallet_utility_LDADD = \
+  libbitcoin_wallet.a \
+  $(LIBBITCOIN_COMMON) \
+  $(LIBBITCOIN_CRYPTO) \
+  $(LIBSECP256K1) \
+  $(LIBBITCOIN_UTIL) \
+  $(BOOST_LIBS) \
+  $(BDB_LIBS) \
+  $(CRYPTO_LIBS) \
+  $(LIBZCASH) \
+  $(LIBZCASH_LIBS)
+endif
+
 #
 
 # zcash-tx binary #

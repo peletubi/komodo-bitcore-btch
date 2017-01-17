@@ -6,7 +6,6 @@ else
 packages := boost openssl $(zcash_packages) googletest googlemock
 endif
 
-
 native_packages := native_ccache
 
 wallet_packages=bdb
