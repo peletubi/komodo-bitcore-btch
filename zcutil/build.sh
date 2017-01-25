@@ -67,4 +67,7 @@ PREFIX="$(pwd)/depends/$BUILD/"
 HOST="$HOST" BUILD="$BUILD" "$MAKE" "$@" -C ./depends/ V=1 NO_QT=1
 ./autogen.sh
 CC="$CC" CXX="$CXX" ./configure --prefix="${PREFIX}" --host="$HOST" --build="$BUILD" --with-gui=no "$HARDENING_ARG" "$LCOV_ARG" "$TEST_ARG" CXXFLAGS='-fwrapv -fno-strict-aliasing -Werror -g -fopenmp'
-"$MAKE" "$@" V=1
+cd src/
+
+# not all targets build when patched for bitcore, so just make the ones we need
+"$MAKE" "$@" V=1 komodod komodo-cli
