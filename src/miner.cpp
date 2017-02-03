@@ -100,7 +100,7 @@ void UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParams, 
 
 #define ASSETCHAINS_MINHEIGHT 100
 #define KOMODO_ELECTION_GAP 2000
-#define ROUNDROBIN_DELAY 55
+#define ROUNDROBIN_DELAY 60
 extern int32_t ASSETCHAINS_SEED,IS_KOMODO_NOTARY,USE_EXTERNAL_PUBKEY,KOMODO_CHOSEN_ONE,ASSETCHAIN_INIT,KOMODO_INITDONE,KOMODO_ON_DEMAND,KOMODO_INITDONE;
 extern char ASSETCHAINS_SYMBOL[16];
 extern std::string NOTARY_PUBKEY;
@@ -455,7 +455,7 @@ void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& 
 //
 // Internal miner
 //
-int8_t komodo_minerid(int32_t height);
+int8_t komodo_minerid(int32_t height,uint8_t *pubkey33);
 
 CBlockTemplate* CreateNewBlockWithKey(CReserveKey& reservekey)
 {
@@ -481,7 +481,7 @@ CBlockTemplate* CreateNewBlockWithKey(CReserveKey& reservekey)
     if ( 0 && ASSETCHAINS_SYMBOL[0] != 0 )
     {
         for (i=0; i<65; i++)
-            fprintf(stderr,"%d ",komodo_minerid(chainActive.Tip()->nHeight-i));
+            fprintf(stderr,"%d ",komodo_minerid(chainActive.Tip()->nHeight-i,0));
         fprintf(stderr," minerids.special %d from ht.%d\n",komodo_is_special(chainActive.Tip()->nHeight+1,NOTARY_PUBKEY33),chainActive.Tip()->nHeight);
     }
     return CreateNewBlock(scriptPubKey);
@@ -520,6 +520,8 @@ static bool ProcessBlockFound(CBlock* pblock, CWallet& wallet, CReserveKey& rese
 }
 
 int32_t komodo_baseid(char *origbase);
+int32_t komodo_eligiblenotary(uint8_t pubkeys[66][33],int32_t *mids,int32_t *nonzpkeysp,int32_t height);
+int32_t FOUND_BLOCK;
 
 void static BitcoinMiner(CWallet *pwallet)
 {
@@ -614,15 +616,44 @@ void static BitcoinMiner(CWallet *pwallet)
             //
             // Search
             //
-            uint32_t savebits; int64_t nStart = GetTime();
+            uint8_t pubkeys[66][33]; int mids[66],nonzpkeys,i,j; uint32_t savebits; int64_t nStart = GetTime();
             savebits = pblock->nBits;
             arith_uint256 hashTarget = arith_uint256().SetCompact(pblock->nBits);
-            if ( ASSETCHAINS_SYMBOL[0] == 0 && komodo_is_special(pindexPrev->nHeight+1,NOTARY_PUBKEY33) > 0 )
+            if ( ASSETCHAINS_SYMBOL[0] == 0 && notaryid >= 0 )//komodo_is_special(pindexPrev->nHeight+1,NOTARY_PUBKEY33) > 0 )
             {
                 if ( (Mining_height % KOMODO_ELECTION_GAP) > 64 || (Mining_height % KOMODO_ELECTION_GAP) == 0 )
                 {
-                    hashTarget = arith_uint256().SetCompact(KOMODO_MINDIFF_NBITS);
-                    fprintf(stderr,"I am the chosen one for %s ht.%d\n",ASSETCHAINS_SYMBOL,pindexPrev->nHeight+1);
+                    komodo_eligiblenotary(pubkeys,mids,&nonzpkeys,pindexPrev->nHeight);
+                    if ( nonzpkeys > 0 )
+                    {
+                        if ( NOTARY_PUBKEY33[0] != 0 && notaryid < 1 )
+                        {
+                            for (i=1; i<66; i++)
+                                if ( memcmp(pubkeys[i],pubkeys[0],33) == 0 )
+                                    break;
+                            if ( i != 66 )
+                            {
+                                printf("VIOLATION at %d\n",i);
+                                for (i=0; i<66; i++)
+                                {
+                                    for (j=0; j<33; j++)
+                                        printf("%02x",pubkeys[i][j]);
+                                    printf(" p%d -> %d\n",i,komodo_minerid(pindexPrev->nHeight-i,pubkeys[i]));
+                                }
+                                for (j=0; j<65; j++)
+                                    fprintf(stderr,"%d ",mids[j]);
+                                fprintf(stderr," <- prev minerids from ht.%d notary.%d VIOLATION\n",pindexPrev->nHeight,notaryid);
+                            }
+                        }
+                        for (j=0; j<65; j++)
+                            if ( mids[j] == notaryid )
+                                break;
+                        if ( j == 65 )
+                        {
+                            hashTarget = arith_uint256().SetCompact(KOMODO_MINDIFF_NBITS);
+                            fprintf(stderr,"I am the chosen one for %s ht.%d\n",ASSETCHAINS_SYMBOL,pindexPrev->nHeight+1);
+                        } //else fprintf(stderr,"duplicate at j.%d\n",j);
+                    } else fprintf(stderr,"no nonz pubkeys\n");
                 } else Mining_start = 0;
             } else Mining_start = 0;
             while (true)
@@ -689,6 +720,8 @@ void static BitcoinMiner(CWallet *pwallet)
                         ehSolverRuns.increment();
                         throw boost::thread_interrupted();
                     }
+                    //if ( ASSETCHAINS_SYMBOL[0] == 0 && NOTARY_PUBKEY33[0] != 0 )
+                    //    sleep(1800);
                     return true;
                 };
                 std::function<bool(EhSolverCancelCheck)> cancelled = [&m_cs, &cancelSolver](EhSolverCancelCheck pos) {
@@ -739,7 +772,7 @@ void static BitcoinMiner(CWallet *pwallet)
                             for (i=0; i<32; i++)
                                 fprintf(stderr,"%02x",((uint8_t *)&hash)[i]);
                             fprintf(stderr," <- %s Block found %d\n",ASSETCHAINS_SYMBOL,Mining_height);
-                            sleep(60); // avoid mining forks
+                            FOUND_BLOCK = 1;
                             break;
                         }
                     } catch (EhSolverCancelledException&) {
@@ -752,6 +785,12 @@ void static BitcoinMiner(CWallet *pwallet)
                 // Check for stop or if block needs to be rebuilt
                 boost::this_thread::interruption_point();
                 // Regtest mode doesn't require peers
+                if ( FOUND_BLOCK != 0 )
+                {
+                    FOUND_BLOCK = 0;
+                    fprintf(stderr,"FOUND_BLOCK!\n");
+                    sleep(2000);
+                }
                 if (vNodes.empty() && chainparams.MiningRequiresPeers())
                 {
                     if ( ASSETCHAINS_SYMBOL[0] == 0 || Mining_height > ASSETCHAINS_MINHEIGHT )
