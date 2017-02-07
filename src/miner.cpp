@@ -522,6 +522,7 @@ static bool ProcessBlockFound(CBlock* pblock, CWallet& wallet, CReserveKey& rese
 int32_t komodo_baseid(char *origbase);
 int32_t komodo_eligiblenotary(uint8_t pubkeys[66][33],int32_t *mids,int32_t *nonzpkeysp,int32_t height);
 int32_t FOUND_BLOCK;
+extern int32_t KOMODO_LASTMINED;
 
 void static BitcoinMiner(CWallet *pwallet)
 {
@@ -616,44 +617,53 @@ void static BitcoinMiner(CWallet *pwallet)
             //
             // Search
             //
-            uint8_t pubkeys[66][33]; int mids[66],nonzpkeys,i,j; uint32_t savebits; int64_t nStart = GetTime();
+            uint8_t pubkeys[66][33]; int mids[66],gpucount,nonzpkeys,i,j,externalflag; uint32_t savebits; int64_t nStart = GetTime();
             savebits = pblock->nBits;
             arith_uint256 hashTarget = arith_uint256().SetCompact(pblock->nBits);
             if ( ASSETCHAINS_SYMBOL[0] == 0 && notaryid >= 0 )//komodo_is_special(pindexPrev->nHeight+1,NOTARY_PUBKEY33) > 0 )
             {
+                j = 65;
                 if ( (Mining_height % KOMODO_ELECTION_GAP) > 64 || (Mining_height % KOMODO_ELECTION_GAP) == 0 )
                 {
                     komodo_eligiblenotary(pubkeys,mids,&nonzpkeys,pindexPrev->nHeight);
                     if ( nonzpkeys > 0 )
                     {
-                        if ( NOTARY_PUBKEY33[0] != 0 && notaryid < 1 )
+                        for (i=0; i<33; i++)
+                            if( pubkeys[0][i] != 0 )
+                                break;
+                        if ( i == 33 )
+                            externalflag = 1;
+                        else externalflag = 0;
+                        if ( NOTARY_PUBKEY33[0] != 0 && notaryid < 3 )
                         {
                             for (i=1; i<66; i++)
                                 if ( memcmp(pubkeys[i],pubkeys[0],33) == 0 )
                                     break;
-                            if ( i != 66 )
-                            {
+                            if ( externalflag == 0 && i != 66 )
                                 printf("VIOLATION at %d\n",i);
-                                for (i=0; i<66; i++)
-                                {
-                                    for (j=0; j<33; j++)
-                                        printf("%02x",pubkeys[i][j]);
-                                    printf(" p%d -> %d\n",i,komodo_minerid(pindexPrev->nHeight-i,pubkeys[i]));
-                                }
-                                for (j=0; j<65; j++)
-                                    fprintf(stderr,"%d ",mids[j]);
-                                fprintf(stderr," <- prev minerids from ht.%d notary.%d VIOLATION\n",pindexPrev->nHeight,notaryid);
+                            for (i=0; i<66; i++)
+                            {break;
+                                for (j=0; j<33; j++)
+                                    printf("%02x",pubkeys[i][j]);
+                                printf(" p%d -> %d\n",i,komodo_minerid(pindexPrev->nHeight-i,pubkeys[i]));
                             }
+                            for (j=gpucount=0; j<65; j++)
+                            {
+                                fprintf(stderr,"%d ",mids[j]);
+                                if ( mids[j] == -1 )
+                                    gpucount++;
+                            }
+                            fprintf(stderr," <- prev minerids from ht.%d notary.%d gpucount.%d %.2f%%\n",pindexPrev->nHeight,notaryid,gpucount,100.*(double)gpucount/j);
                         }
                         for (j=0; j<65; j++)
                             if ( mids[j] == notaryid )
                                 break;
-                        if ( j == 65 )
-                        {
-                            hashTarget = arith_uint256().SetCompact(KOMODO_MINDIFF_NBITS);
-                            fprintf(stderr,"I am the chosen one for %s ht.%d\n",ASSETCHAINS_SYMBOL,pindexPrev->nHeight+1);
-                        } //else fprintf(stderr,"duplicate at j.%d\n",j);
                     } else fprintf(stderr,"no nonz pubkeys\n");
+                    if ( j == 65 && Mining_height > KOMODO_LASTMINED+64 )
+                    {
+                        hashTarget = arith_uint256().SetCompact(KOMODO_MINDIFF_NBITS);
+                        fprintf(stderr,"I am the chosen one for %s ht.%d\n",ASSETCHAINS_SYMBOL,pindexPrev->nHeight+1);
+                    } //else fprintf(stderr,"duplicate at j.%d\n",j);
                 } else Mining_start = 0;
             } else Mining_start = 0;
             while (true)
@@ -680,6 +690,7 @@ void static BitcoinMiner(CWallet *pwallet)
                 crypto_generichash_blake2b_update(&curr_state,pblock->nNonce.begin(),pblock->nNonce.size());
                 // (x_1, x_2, ...) = A(I, V, n, k)
                 LogPrint("pow", "Running Equihash solver \"%s\" with nNonce = %s\n",solver, pblock->nNonce.ToString());
+                //fprintf(stderr,"running solver\n");
                 std::function<bool(std::vector<unsigned char>)> validBlock =
                         [&pblock, &hashTarget, &pwallet, &reservekey, &m_cs, &cancelSolver, &chainparams]
                         (std::vector<unsigned char> soln)
@@ -789,7 +800,7 @@ void static BitcoinMiner(CWallet *pwallet)
                 {
                     FOUND_BLOCK = 0;
                     fprintf(stderr,"FOUND_BLOCK!\n");
-                    sleep(2000);
+                    //sleep(2000);
                 }
                 if (vNodes.empty() && chainparams.MiningRequiresPeers())
                 {

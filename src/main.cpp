@@ -1272,7 +1272,7 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
             dFreeCount += nSize;
         }
 
-        if (fRejectAbsurdFee && nFees > ::minRelayTxFee.GetFee(nSize) * 10000 && nFees > COIN )
+        if (fRejectAbsurdFee && nFees > ::minRelayTxFee.GetFee(nSize) * 10000 && nFees > nValueOut/20 )
         {
             fprintf(stderr,"accept failure.8\n");
             return error("AcceptToMemoryPool: absurdly high fees %s, %d > %d",hash.ToString(), nFees, ::minRelayTxFee.GetFee(nSize) * 10000);
@@ -1922,6 +1922,8 @@ bool ContextualCheckInputs(const CTransaction& tx, CValidationState &state, cons
 
             // If prev is coinbase, check that it's matured
             if (coins->IsCoinBase()) {
+                if ( ASSETCHAINS_SYMBOL[0] == 0 )
+                    COINBASE_MATURITY = _COINBASE_MATURITY;
                 if (nSpendHeight - coins->nHeight < COINBASE_MATURITY) {
                     fprintf(stderr,"ContextualCheckInputs failure.1 i.%d of %d\n",i,(int32_t)tx.vin.size());
 
