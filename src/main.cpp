@@ -709,17 +709,51 @@ bool IsStandardTx(const CTransaction& tx, string& reason)
     return true;
 }
 
-bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64_t nBlockTime)
+int32_t komodo_validate_interest(const CTransaction& tx)
 {
+    int32_t i,txheight=0; uint32_t prevblocktime=0,locktime; uint64_t value=0;
+    if ( ASSETCHAINS_SYMBOL[0] == 0 && (int64_t)tx.nLockTime >= LOCKTIME_THRESHOLD )
+    {
+        locktime = komodo_interest_args(&txheight,&prevblocktime,&value,tx.GetHash(),0);
+        if ( prevblocktime == 0 )
+        {
+            static uint32_t counter0;
+            prevblocktime = chainActive.Tip()->nTime;
+            if ( counter0++ < 100 )
+                fprintf(stderr,"error getting prevblocktime, set to tiptime.%u\n",prevblocktime);
+        }
+        if ( (int64_t)tx.nLockTime < prevblocktime-3600 )
+        {
+            if ( prevblocktime > 1490159171 || (txheight == 0 && prevblocktime >= 1490159171) ) // 246748
+            {
+                static uint32_t counter;
+                if ( counter++ < 100 )
+                    fprintf(stderr,"komodo_validate_interest reject.%d locktime %u/%u vs nBlockTime %u prevblocktime.%u\n",txheight,(uint32_t)tx.nLockTime,locktime,(uint32_t)chainActive.Tip()->nTime,prevblocktime);
+                return(-1);
+            } else fprintf(stderr,"validateinterest grandfather.%d locktime %u vs nBlockTime %u\n",(int32_t)txheight,tx.nLockTime,(uint32_t)prevblocktime);
+        }
+    }
+    return(0);
+}
+
+bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64_t nBlockTime,int flags)
+{
+    int32_t i;
     if (tx.nLockTime == 0)
         return true;
+    if ( ASSETCHAINS_SYMBOL[0] == 0 && flags == STANDARD_LOCKTIME_VERIFY_FLAGS && (int64_t)tx.nLockTime >= LOCKTIME_THRESHOLD )//&& (int64_t)tx.nLockTime < nBlockTime-3600 )
+    {
+        if ( komodo_validate_interest(tx) < 0 )
+            return(false);
+        /*
+        if ( nBlockTime >= 1490159171 ) // 246748
+        {
+            fprintf(stderr,"[%d] IsFinalTx reject.%d locktime %u vs nBlockTime %u\n",(int32_t)(tx.nLockTime-nBlockTime),(int32_t)nBlockHeight,tx.nLockTime,(uint32_t)nBlockTime);
+            return(false); // need to prevent pastdating tx
+        } else fprintf(stderr,"IsFinalTx grandfather.%d locktime %u vs nBlockTime %u\n",(int32_t)nBlockHeight,tx.nLockTime,(uint32_t)nBlockTime);*/
+    }
     if ((int64_t)tx.nLockTime < ((int64_t)tx.nLockTime < LOCKTIME_THRESHOLD ? (int64_t)nBlockHeight : nBlockTime))
         return true;
-    if ( (int64_t)tx.nLockTime >= LOCKTIME_THRESHOLD && (int64_t)tx.nLockTime < nBlockTime-3600 )
-    {
-        fprintf(stderr,"IsFinalTx reject locktime %u vs nBlockTime %u\n",tx.nLockTime,(uint32_t)nBlockTime);
-        return(false); // need to prevent pastdating tx
-    }
     BOOST_FOREACH(const CTxIn& txin, tx.vin)
     {
         if ( txin.nSequence == 0xfffffffe && (((int64_t)tx.nLockTime >= LOCKTIME_THRESHOLD && (int64_t)tx.nLockTime > nBlockTime) || ((int64_t)tx.nLockTime < LOCKTIME_THRESHOLD && (int64_t)tx.nLockTime > nBlockHeight)) )
@@ -763,7 +797,7 @@ bool CheckFinalTx(const CTransaction &tx, int flags)
                              ? chainActive.Tip()->GetMedianTimePast()
                              : GetAdjustedTime();
 
-    return IsFinalTx(tx, nBlockHeight, nBlockTime);
+    return IsFinalTx(tx, nBlockHeight, nBlockTime,flags);
 }
 
 /**
@@ -863,10 +897,28 @@ unsigned int GetP2SHSigOpCount(const CTransaction& tx, const CCoinsViewCache& in
     return nSigOps;
 }
 
-bool CheckTransaction(const CTransaction& tx, CValidationState &state,
-                      libzcash::ProofVerifier& verifier)
+bool CheckTransaction(const CTransaction& tx, CValidationState &state,libzcash::ProofVerifier& verifier)
 {
-    // Don't count coinbase transactions because mining skews the count
+    static uint256 array[15]; int32_t j,k,n;
+    if ( *(int32_t *)&array[0] == 0 )
+        komodo_bannedset(array,(int32_t)(sizeof(array)/sizeof(*array)));
+    //if ( komodo_validate_interest(tx) < 0 )
+    //    return(false);
+    n = tx.vin.size();
+    for (j=0; j<n; j++)
+    {
+        for (k=0; k<sizeof(array)/sizeof(*array); k++)
+        {
+            if ( tx.vin[j].prevout.hash == array[k] && tx.vin[j].prevout.n == 1 )
+            {
+                static uint32_t counter;
+                if ( counter++ < 100 )
+                    printf("MEMPOOL: banned tx.%d being used at ht.%d vini.%d\n",k,(int32_t)chainActive.Tip()->nHeight,j);
+                return(false);
+            }
+        }
+    }
+ // Don't count coinbase transactions because mining skews the count
     if (!tx.IsCoinBase()) {
         transactionsValidated.increment();
     }
@@ -1111,7 +1163,7 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
     // be mined yet.
     if (!CheckFinalTx(tx, STANDARD_LOCKTIME_VERIFY_FLAGS))
     {
-        fprintf(stderr,"AcceptToMemoryPool non-final\n");
+        fprintf(stderr,"AcceptToMemoryPool reject non-final\n");
         return state.DoS(0, false, REJECT_NONSTANDARD, "non-final");
     }
    // is it already in the memory pool?
@@ -1573,12 +1625,12 @@ bool IsInitialBlockDownload()
     LOCK(cs_main);
     if (fImporting || fReindex)
     {
-        //fprintf(stderr,"fImporting %d || %d fReindex\n",(int32_t)fImporting,(int32_t)fReindex);
+        //fprintf(stderr,"IsInitialBlockDownload: fImporting %d || %d fReindex\n",(int32_t)fImporting,(int32_t)fReindex);
         return true;
     }
     if (fCheckpointsEnabled && chainActive.Height() < Checkpoints::GetTotalBlocksEstimate(chainParams.Checkpoints()))
     {
-        //fprintf(stderr,"checkpoint -> initialdownload\n");
+        //fprintf(stderr,"IsInitialBlockDownload: checkpoint -> initialdownload\n");
         return true;
     }
     static bool lockIBDState = false;
@@ -1587,14 +1639,18 @@ bool IsInitialBlockDownload()
         //fprintf(stderr,"lockIBDState true %d < %d\n",chainActive.Height(),pindexBestHeader->nHeight - 10);
         return false;
     }
-    bool state;
+    bool state; CBlockIndex *ptr = chainActive.Tip();
+    if ( ptr == 0 )
+        ptr = pindexBestHeader;
+    else if ( pindexBestHeader != 0 && pindexBestHeader->nHeight > ptr->nHeight )
+        ptr = pindexBestHeader;
     if ( ASSETCHAINS_SYMBOL[0] == 0 )
-        state = (chainActive.Height() > 236000 && chainActive.Height() < pindexBestHeader->nHeight - 24*6) ||
-                    pindexBestHeader->GetBlockTime() < (GetTime() - chainParams.MaxTipAge());
-    else state = (chainActive.Height() < pindexBestHeader->nHeight - 100);
+        state = ((chainActive.Height() < ptr->nHeight - 24*6) ||
+                    ptr->GetBlockTime() < (GetTime() - chainParams.MaxTipAge()));
+    else state = (chainActive.Height() < ptr->nHeight - 100);
+    //fprintf(stderr,"state.%d  ht.%d vs %d, t.%u %u\n",state,(int32_t)chainActive.Height(),(uint32_t)ptr->nHeight,(int32_t)ptr->GetBlockTime(),(uint32_t)(GetTime() - chainParams.MaxTipAge()));
     if (!state)
     {
-        //fprintf(stderr,"lockIBDState tru\n");
         lockIBDState = true;
     }
     return state;
@@ -2983,7 +3039,6 @@ static void PruneBlockIndexCandidates() {
  * pblock is either NULL or a pointer to a CBlock corresponding to pindexMostWork.
  */
 static bool ActivateBestChainStep(CValidationState &state, CBlockIndex *pindexMostWork, CBlock *pblock) {
-    extern int32_t KOMODO_REWIND;
     AssertLockHeld(cs_main);
     bool fInvalidFound = false;
     const CBlockIndex *pindexOldTip = chainActive.Tip();
@@ -2994,21 +3049,27 @@ static bool ActivateBestChainStep(CValidationState &state, CBlockIndex *pindexMo
         if (!DisconnectTip(state))
             return false;
     }
-    if ( KOMODO_REWIND != 0 && chainActive.Tip()->nHeight > KOMODO_REWIND )
+    /*if ( KOMODO_REWIND != 0 && chainActive.Tip()->nHeight >= KOMODO_REWIND )
     {
-        static int32_t didinit;
-        if ( didinit++ == 0 )
+        fprintf(stderr,"rewind ht.%d\n",chainActive.Tip()->nHeight);
+        while ( chainActive.Tip()->nHeight > KOMODO_REWIND )
         {
-            while (chainActive.Tip()->nHeight > KOMODO_REWIND )
+            if ( !DisconnectTip(state) )
             {
-                fprintf(stderr,"rewind ht.%d\n",chainActive.Tip()->nHeight);
-                if ( !DisconnectTip(state) )
-                    return false;
+                //InvalidateBlock(state,chainActive.Tip());
+                return false;
             }
-            pindexOldTip = chainActive.Tip();
-            pindexFork = chainActive.FindFork(pindexMostWork);
         }
-    }
+        fprintf(stderr,"end rewind ht.%d\n",chainActive.Tip()->nHeight);
+        if ( chainActive.Tip()->nHeight == KOMODO_REWIND )
+        {
+            fprintf(stderr,"reached rewind.%d, best to do: ./komodo-cli stop\n",KOMODO_REWIND);
+            sleep(3);
+            return(true);
+        }
+        pindexOldTip = chainActive.Tip();
+        pindexFork = chainActive.FindFork(pindexMostWork);
+    }*/
     // Build list of new blocks to connect.
     std::vector<CBlockIndex*> vpindexToConnect;
     bool fContinue = true;
@@ -3084,7 +3145,6 @@ bool ActivateBestChain(CValidationState &state, CBlock *pblock) {
 
             if (!ActivateBestChainStep(state, pindexMostWork, pblock && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : NULL))
                 return false;
-
             pindexNewTip = chainActive.Tip();
             fInitialDownload = IsInitialBlockDownload();
         }
@@ -3435,8 +3495,13 @@ bool CheckBlock(int32_t height,CBlockIndex *pindex,const CBlock& block, CValidat
     if (nSigOps > MAX_BLOCK_SIGOPS)
         return state.DoS(100, error("CheckBlock(): out-of-bounds SigOpCount"),
                          REJECT_INVALID, "bad-blk-sigops", true);
-    if ( komodo_check_deposit(height,block) < 0 )
+    if ( komodo_check_deposit(ASSETCHAINS_SYMBOL[0] == 0 ? height : pindex != 0 ? (int32_t)pindex->nHeight : chainActive.Tip()->nHeight+1,block) < 0 )
+    {
+        static uint32_t counter;
+        if ( counter++ < 100 )
+            fprintf(stderr,"check deposit rejection\n");
         return(false);
+    }
     return true;
 }
 
@@ -3479,7 +3544,6 @@ bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& sta
         else if ( komodo_checkpoint(&notarized_height,nHeight,hash) < 0 )
             return state.DoS(100, error("%s: forked chain %d older than last notarized (height %d) vs %d", __func__,nHeight, notarized_height));
     }
-
     // Reject block.nVersion < 4 blocks
     if (block.nVersion < 4)
         return state.Invalid(error("%s : rejected nVersion<4 block", __func__),
@@ -3499,7 +3563,7 @@ bool ContextualCheckBlock(const CBlock& block, CValidationState& state, CBlockIn
         int64_t nLockTimeCutoff = (nLockTimeFlags & LOCKTIME_MEDIAN_TIME_PAST)
                                 ? pindexPrev->GetMedianTimePast()
                                 : block.GetBlockTime();
-        if (!IsFinalTx(tx, nHeight, nLockTimeCutoff)) {
+        if (!IsFinalTx(tx, nHeight, nLockTimeCutoff,STANDARD_LOCKTIME_VERIFY_FLAGS)) {
             return state.DoS(10, error("%s: contains a non-final transaction", __func__), REJECT_INVALID, "bad-txns-nonfinal");
         }
     }
@@ -3653,7 +3717,7 @@ bool ProcessNewBlock(int32_t height,CValidationState &state, CNode* pfrom, CBloc
         komodo_currentheight_set(chainActive.Tip()->nHeight);
     if ( ASSETCHAINS_SYMBOL[0] == 0 )
         checked = CheckBlock(height!=0?height:komodo_block2height(pblock),0,*pblock, state, verifier);
-    else checked = CheckBlock(0,0,*pblock, state, verifier);
+    else checked = CheckBlock(height!=0?height:komodo_block2height(pblock),0,*pblock, state, verifier);
     {
         LOCK(cs_main);
         bool fRequested = MarkBlockAsReceived(pblock->GetHash());
@@ -3695,13 +3759,25 @@ bool TestBlockValidity(CValidationState &state, const CBlock& block, CBlockIndex
 
     // NOTE: CheckBlockHeader is called by CheckBlock
     if (!ContextualCheckBlockHeader(block, state, pindexPrev))
+    {
+        fprintf(stderr,"TestBlockValidity failure A\n");
         return false;
+    }
     if (!CheckBlock(indexDummy.nHeight,0,block, state, verifier, fCheckPOW, fCheckMerkleRoot))
+    {
+        fprintf(stderr,"TestBlockValidity failure B\n");
         return false;
+    }
     if (!ContextualCheckBlock(block, state, pindexPrev))
+    {
+        fprintf(stderr,"TestBlockValidity failure C\n");
         return false;
+    }
     if (!ConnectBlock(block, state, &indexDummy, viewNew, true))
+    {
+        fprintf(stderr,"TestBlockValidity failure D\n");
         return false;
+    }
     assert(state.IsValid());
 
     return true;
@@ -4133,7 +4209,7 @@ bool LoadBlockIndex()
         return false;
     }
     KOMODO_LOADINGBLOCKS = 0;
-    fprintf(stderr,"finished loading blocks\n");
+    fprintf(stderr,"finished loading blocks %s\n",ASSETCHAINS_SYMBOL);
     return true;
 }
 
